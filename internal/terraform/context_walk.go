@@ -84,7 +84,7 @@ func (c *Context) walk(graph *Graph, operation walkOperation, opts *graphWalkOpt
 	log.Printf("[DEBUG] Starting graph walk: %s", operation.String())
 
 	walker := c.graphWalker(graph, operation, opts)
-
+    println("Terrafault Experiment walk walker")
 	// Watch for a stop so we can call the provider Stop() API.
 	watchStop, watchWait := c.watchStop(walker)
 

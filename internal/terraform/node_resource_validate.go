@@ -52,7 +52,7 @@ func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (di
 	if n.Config == nil {
 		return diags
 	}
-
+    println("Terrafault Experiment node validateResource")
 	diags = diags.Append(n.validateResource(ctx))
 
 	diags = diags.Append(n.validateCheckRules(ctx, n.Config))
@@ -278,6 +278,56 @@ var connectionBlockSupersetSchema = &configschema.Block{
 	},
 }
 
+func configschemaToHCLSchema(block *configschema.Block) *hcl.BodySchema {
+    schema := &hcl.BodySchema{
+        Attributes: make([]hcl.AttributeSchema, 0, len(block.Attributes)),
+        Blocks: make([]hcl.BlockHeaderSchema, 0, len(block.BlockTypes)),
+    }
+
+    // Convert attributes
+    for name, attr := range block.Attributes {
+        schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{
+            Name:     name,
+            Required: attr.Required,
+        })
+    }
+
+    // Convert nested blocks
+    for name, _ := range block.BlockTypes {
+		//subBody := configschemaToHCLSchema(block.Block)
+        schema.Blocks = append(schema.Blocks, hcl.BlockHeaderSchema{
+            Type: name,
+        })
+    }
+
+    return schema
+}
+
+
+func printHCLBody(body hcl.Body, configSchema *configschema.Block) {
+    schema := configschemaToHCLSchema(configSchema)
+    content, diags := body.Content(schema)
+    if diags.HasErrors() {
+        fmt.Println("Failed to parse HCL body:", diags)
+        return
+    }
+
+    fmt.Println("Attributes:")
+    for name, attr := range content.Attributes {
+        fmt.Printf("    Attribute Name:  %s:\n%s\n", name, attr.Expr)
+    }
+
+    fmt.Println("Blocks:")
+    for _, block := range content.Blocks {
+        fmt.Printf("    Block Type: %s, Labels: %v\n", block.Type, block.Labels)
+		for name, schemaBlock := range configSchema.BlockTypes {
+			if block.Type == name {
+				printHCLBody(block.Body, &schemaBlock.Block) 
+			}
+		}// Recursive call for nested blocks
+    }
+}
+
 func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
@@ -322,6 +372,12 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 	switch n.Config.Mode {
 	case addrs.ManagedResourceMode:
 		schema, _ := providerSchema.SchemaForResourceType(n.Config.Mode, n.Config.Type)
+		
+		println("Terrafault Experiment validateResource config", n.Config.Mode, n.Config.Type)
+		//hclSchema := configschemaToHCLSchema(schema) // Convert configschema to hcl.BodySchema
+        printHCLBody(n.Config.Config, schema) // Print the HCL body
+		
+
 		if schema == nil {
 			var suggestion string
 			if dSchema, _ := providerSchema.SchemaForResourceType(addrs.DataResourceMode, n.Config.Type); dSchema != nil {

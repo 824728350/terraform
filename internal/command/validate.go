@@ -53,7 +53,7 @@ func (c *ValidateCommand) Run(rawArgs []string) int {
 		diags = diags.Append(fmt.Errorf("error loading plugin path: %s", err))
 		return view.Results(diags)
 	}
-
+    println("Terrafault Experiment validateDiags")
 	validateDiags := c.validate(dir, args.TestDirectory, args.NoTests)
 	diags = diags.Append(validateDiags)
 

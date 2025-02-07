@@ -27,3 +27,8 @@ vendor/
 
 # Coverage
 coverage.txt
+
+output*
+go_graph*
+.dependencygraph*
+.dependencygraph/*
