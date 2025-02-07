@@ -305,8 +305,8 @@ func configschemaToHCLSchema(block *configschema.Block) *hcl.BodySchema {
 
 
 func printHCLBody(body hcl.Body, configSchema *configschema.Block) {
-    schema := configschemaToHCLSchema(configSchema)
-    content, diags := body.Content(schema)
+    hclSchema := configschemaToHCLSchema(configSchema)
+    content, diags := body.Content(hclSchema)
     if diags.HasErrors() {
         fmt.Println("Failed to parse HCL body:", diags)
         return
