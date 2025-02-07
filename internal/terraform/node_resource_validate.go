@@ -52,7 +52,7 @@ func (n *NodeValidatableResource) Execute(ctx EvalContext, op walkOperation) (di
 	if n.Config == nil {
 		return diags
 	}
-    println("Terrafault Experiment node validateResource")
+    println("\nTerrafault Experiment node validateResource")
 	diags = diags.Append(n.validateResource(ctx))
 
 	diags = diags.Append(n.validateCheckRules(ctx, n.Config))
@@ -278,6 +278,12 @@ var connectionBlockSupersetSchema = &configschema.Block{
 	},
 }
 
+func printSpaces(n int) {
+	for i := 0; i < n; i++ {
+		fmt.Print(" ")
+	}
+}
+
 func configschemaToHCLSchema(block *configschema.Block) *hcl.BodySchema {
     schema := &hcl.BodySchema{
         Attributes: make([]hcl.AttributeSchema, 0, len(block.Attributes)),
@@ -304,25 +310,50 @@ func configschemaToHCLSchema(block *configschema.Block) *hcl.BodySchema {
 }
 
 
-func printHCLBody(body hcl.Body, configSchema *configschema.Block) {
+func printHCLBody(body hcl.Body, configSchema *configschema.Block, indentLevel int, ctx EvalContext) {
     hclSchema := configschemaToHCLSchema(configSchema)
     content, diags := body.Content(hclSchema)
     if diags.HasErrors() {
         fmt.Println("Failed to parse HCL body:", diags)
         return
     }
+    
+	// Create evaluation context
+    scope := ctx.EvaluationScope(nil, nil, EvalDataForNoInstanceKey)
+    if scope == nil {
+        fmt.Println("Failed to create evaluation scope")
+        return
+    }
+    
+	var refs []*addrs.Reference
+    for _, attr := range content.Attributes {
+        exprRefs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, attr.Expr)
+        refs = append(refs, exprRefs...)
+    }
+    
+    hclCtx, _ := scope.EvalContext(refs)
 
-    fmt.Println("Attributes:")
+	//printSpaces(indentLevel)
+    //fmt.Println("Attributes:")
     for name, attr := range content.Attributes {
-        fmt.Printf("    Attribute Name:  %s:\n%s\n", name, attr.Expr)
+		printSpaces(indentLevel)
+        //fmt.Printf("Attribute Name: %s Value: %s\n", name, attr.Expr)
+		val, diags := attr.Expr.Value(hclCtx)
+        if diags.HasErrors() {
+            fmt.Printf("Attribute Name: %s Value: <error evaluating>\n", name)
+        } else {
+            fmt.Printf("Attribute Name: %s Value: %v\n", name, val.GoString())
+        }
     }
 
-    fmt.Println("Blocks:")
+	//printSpaces(indentLevel)
+    //fmt.Println("Blocks:")
     for _, block := range content.Blocks {
-        fmt.Printf("    Block Type: %s, Labels: %v\n", block.Type, block.Labels)
+		printSpaces(indentLevel)
+        fmt.Printf("Block Type: %s, Labels: %v\n", block.Type, block.Labels)
 		for name, schemaBlock := range configSchema.BlockTypes {
 			if block.Type == name {
-				printHCLBody(block.Body, &schemaBlock.Block) 
+				printHCLBody(block.Body, &schemaBlock.Block, indentLevel+2, ctx) 
 			}
 		}// Recursive call for nested blocks
     }
@@ -373,9 +404,9 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 	case addrs.ManagedResourceMode:
 		schema, _ := providerSchema.SchemaForResourceType(n.Config.Mode, n.Config.Type)
 		
-		println("Terrafault Experiment validateResource config", n.Config.Mode, n.Config.Type)
-		//hclSchema := configschemaToHCLSchema(schema) // Convert configschema to hcl.BodySchema
-        printHCLBody(n.Config.Config, schema) // Print the HCL body
+		/*Terrafault changes made to print the HCL body*/
+		fmt.Println("\nTerrafault Experiment validateResource config\nResource:", n.Config.Type, n.Config.Name, n.Config.Mode)
+        printHCLBody(n.Config.Config, schema, 2, ctx) // Print the HCL body
 		
 
 		if schema == nil {
