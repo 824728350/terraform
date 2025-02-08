@@ -26,6 +26,7 @@ import (
 // for static analysis.
 func BuildConfig(root *Module, walker ModuleWalker, loader MockDataLoader) (*Config, hcl.Diagnostics) {
 	var diags hcl.Diagnostics
+	println("\nTerrafault Experiment BuildConfig")
 	cfg := &Config{
 		Module: root,
 	}

@@ -20,6 +20,9 @@ import (
 	"github.com/hashicorp/terraform/internal/providers"
 	"github.com/hashicorp/terraform/internal/provisioners"
 	"github.com/hashicorp/terraform/internal/tfdiags"
+
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
 // NodeValidatableResource represents a resource that is used for validation
@@ -333,8 +336,6 @@ func printHCLBody(body hcl.Body, configSchema *configschema.Block, indentLevel i
     
     hclCtx, _ := scope.EvalContext(refs)
 
-	//printSpaces(indentLevel)
-    //fmt.Println("Attributes:")
     for name, attr := range content.Attributes {
 		printSpaces(indentLevel)
         //fmt.Printf("Attribute Name: %s Value: %s\n", name, attr.Expr)
@@ -346,8 +347,6 @@ func printHCLBody(body hcl.Body, configSchema *configschema.Block, indentLevel i
         }
     }
 
-	//printSpaces(indentLevel)
-    //fmt.Println("Blocks:")
     for _, block := range content.Blocks {
 		printSpaces(indentLevel)
         fmt.Printf("Block Type: %s, Labels: %v\n", block.Type, block.Labels)
@@ -358,6 +357,134 @@ func printHCLBody(body hcl.Body, configSchema *configschema.Block, indentLevel i
 		}// Recursive call for nested blocks
     }
 }
+
+func copyHCLBody(originalBody hcl.Body, schema *configschema.Block, ctx EvalContext) (hcl.Body, error) {
+    // Create new empty HCL file
+    f := hclwrite.NewEmptyFile()
+    newBody := f.Body()
+
+    // Get content from original body
+    hclSchema := configschemaToHCLSchema(schema)
+    content, diags := originalBody.Content(hclSchema)
+    if diags.HasErrors() {
+        return nil, fmt.Errorf("error getting content: %s", diags.Error())
+    }
+
+    // Create evaluation context for expressions
+    scope := ctx.EvaluationScope(nil, nil, EvalDataForNoInstanceKey)
+    if scope == nil {
+        return nil, fmt.Errorf("failed to create evaluation scope")
+    }
+
+    // Copy attributes
+	for name, attr := range content.Attributes {
+
+        if expr, ok := attr.Expr.(*hclsyntax.ScopeTraversalExpr); ok {
+            // For dynamic references, preserve the original expression
+            newBody.SetAttributeTraversal(name, expr.Traversal)
+            continue
+        }
+
+		attrSchema := schema.Attributes[name]
+        if attrSchema == nil {
+            continue
+        }
+        
+		if attrSchema.Type.IsListType() || attrSchema.Type.IsSetType() {
+            if expr, ok := attr.Expr.(*hclsyntax.TupleConsExpr); ok {
+                // For lists with mixed content (static and dynamic values)
+                tokens := hclwrite.Tokens{
+                    {Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+                }
+                
+                for i, item := range expr.Exprs {
+                    if i > 0 {
+                        tokens = append(tokens, &hclwrite.Token{
+                            Type: hclsyntax.TokenComma,
+                            Bytes: []byte(","),
+                        })
+                    }
+
+					// Handle dynamic references directly using traversal
+					if traversal, ok := item.(*hclsyntax.ScopeTraversalExpr); ok {
+						tokens = append(tokens, hclwrite.TokensForTraversal(traversal.Traversal)...)
+						continue
+					}
+		
+                    // Try to evaluate each item individually
+                    refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, item)
+                    hclCtx, _ := scope.EvalContext(refs)
+                    val, diags := item.Value(hclCtx)
+                    
+                    if !diags.HasErrors() && val.IsKnown() && !val.IsNull() {
+                        // For static values that can be evaluated
+                        elemTokens := hclwrite.TokensForValue(val)
+                        tokens = append(tokens, elemTokens...)
+                    } 
+                }
+                
+                tokens = append(tokens, &hclwrite.Token{
+                    Type: hclsyntax.TokenCBrack,
+                    Bytes: []byte("]"),
+                })
+                newBody.SetAttributeRaw(name, tokens)
+                continue
+            }
+		}
+
+		refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, attr.Expr)
+		hclCtx, _ := scope.EvalContext(refs)
+		//fmt.Printf("References: %v\n", refs)
+		val, diags := attr.Expr.Value(hclCtx)
+		
+		if !diags.HasErrors() && val.IsKnown() && !val.IsNull() {
+			// Only set known, non-null values
+			if name == "size" {
+				newBody.SetAttributeValue("terrafault", val)
+			} else {
+				// Only set known, non-null values
+				newBody.SetAttributeValue(name, val)
+			}
+		}
+        
+    }
+
+    // Copy blocks
+    for _, block := range content.Blocks {
+        newBlock := newBody.AppendNewBlock(block.Type, block.Labels)
+        blockContent := newBlock.Body()
+
+        // Find the corresponding block type in schema
+        if blockS, ok := schema.BlockTypes[block.Type]; ok {
+            // Recursively copy block content
+            if subBody, err := copyHCLBody(block.Body, &blockS.Block, ctx); err == nil {
+                // Get content from the copied body and write to the new block
+                if subContent, diags := subBody.Content(configschemaToHCLSchema(&blockS.Block)); !diags.HasErrors() {
+                    for name, attr := range subContent.Attributes {
+                        refs, _ := langrefs.ReferencesInExpr(addrs.ParseRef, attr.Expr)
+                        hclCtx, _ := scope.EvalContext(refs)
+                        
+                        val, diags := attr.Expr.Value(hclCtx)
+                        if !diags.HasErrors() && val.IsKnown() && !val.IsNull() {
+                            // Only set known, non-null values
+                            blockContent.SetAttributeValue(name, val)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse the generated HCL back into a Body
+    generated := f.Bytes()
+    parsedFile, diags := hclsyntax.ParseConfig(generated, "", hcl.Pos{Line: 1, Column: 1})
+    if diags.HasErrors() {
+        return nil, fmt.Errorf("error parsing generated HCL: %s", diags.Error())
+    }
+
+    return parsedFile.Body, nil
+} 
+
 
 func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
@@ -405,9 +532,17 @@ func (n *NodeValidatableResource) validateResource(ctx EvalContext) tfdiags.Diag
 		schema, _ := providerSchema.SchemaForResourceType(n.Config.Mode, n.Config.Type)
 		
 		/*Terrafault changes made to print the HCL body*/
-		fmt.Println("\nTerrafault Experiment validateResource config\nResource:", n.Config.Type, n.Config.Name, n.Config.Mode)
-        printHCLBody(n.Config.Config, schema, 2, ctx) // Print the HCL body
-		
+		fmt.Println("\nTerrafault Experiment validateResource config\nOriginal Resource:", n.Config.Type, n.Config.Name, n.Config.Mode)
+		printHCLBody(n.Config.Config, schema, 2, ctx)
+
+		fmt.Println("\nTerrafault Experiment copyHCLBody")
+		newBody, err := copyHCLBody(n.Config.Config, schema, ctx)
+		if err == nil {
+			n.Config.Config = newBody// Handle error
+			fmt.Println("\nTerrafault Experiment validateResource config\nCopied Resource:", n.Config.Type, n.Config.Name, n.Config.Mode)
+			printHCLBody(n.Config.Config, schema, 2, ctx) 
+		}
+		//printHCLBody(n.Config.Config, schema, 2, ctx)
 
 		if schema == nil {
 			var suggestion string
